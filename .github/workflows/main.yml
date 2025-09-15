@@ -2,7 +2,7 @@ name: Auto Redeploy Render App on Ping Failure
 
 on:
   schedule:
-    - cron: "*/5 * * * *" # हर 5 मिनट पर check करेगा
+    - cron: "*/5 * * * *" # हर 5 मिनट पर रन होगा
   workflow_dispatch:
 
 jobs:
@@ -16,23 +16,41 @@ jobs:
       - name: Ping Render App URL
         id: ping
         run: |
-          echo "Pinging app..."
-          STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 https://n8n-ffmpeg-1-ysgq.onrender.com/)
-          echo "status=$STATUS_CODE" >> $GITHUB_OUTPUT
+          echo "🔄 Pinging app..."
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 https://n8n-ffmpeg-1-ysgq.onrender.com || echo "000")
+          echo "HTTP Status: $STATUS"
+          
+          if [ "$STATUS" -ge 200 ] && [ "$STATUS" -lt 400 ]; then
+            echo "✅ Ping successful"
+            echo "redeploy_needed=false" >> $GITHUB_ENV
+          else
+            echo "⚠️ Ping failed or timeout"
+            echo "redeploy_needed=true" >> $GITHUB_ENV
+          fi
 
       - name: Check if Deploy is Already Running
-        id: deploy_status
+        if: env.redeploy_needed == 'true'
         run: |
+          echo "🔍 Checking last deploy status..."
           DEPLOY=$(curl -s -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
-            "https://api.render.com/v1/services/${{ secrets.RENDER_SERVICE_ID }}/deploys?limit=1")
+            https://api.render.com/v1/services/${{ secrets.RENDER_SERVICE_ID }}/deploys?limit=1)
+
           STATUS=$(echo "$DEPLOY" | jq -r '.[0].status')
-          echo "latest_deploy_status=$STATUS" >> $GITHUB_OUTPUT
+          echo "Last deploy status: $STATUS"
+
+          if [ "$STATUS" = "in_progress" ]; then
+            echo "⏳ Another deploy is already running. Skipping redeploy."
+            echo "redeploy_needed=false" >> $GITHUB_ENV
+          fi
 
       - name: Trigger Redeploy if Down and No Deploy Running
-        if: steps.ping.outputs.status != '200' && steps.deploy_status.outputs.latest_deploy_status != 'build_in_progress'
+        if: env.redeploy_needed == 'true'
         run: |
-          echo "App seems down and no deploy is running. Triggering redeploy..."
-          curl -X POST \
+          echo "🚀 Triggering redeploy on Render..."
+          RESPONSE=$(curl -s -X POST \
+            -H "Accept: application/json" \
             -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
-            -H "Content-Type: application/json" \
-            "https://api.render.com/v1/services/${{ secrets.RENDER_SERVICE_ID }}/deploys"
+            https://api.render.com/v1/services/${{ secrets.RENDER_SERVICE_ID }}/deploys)
+
+          echo "Redeploy Triggered. Response:"
+          echo "$RESPONSE"
