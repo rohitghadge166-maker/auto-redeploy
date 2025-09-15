@@ -1,0 +1,38 @@
+name: Auto Redeploy Render App on Ping Failure
+
+on:
+  schedule:
+    - cron: "*/5 * * * *" # हर 5 मिनट पर check करेगा
+  workflow_dispatch:
+
+jobs:
+  check-and-redeploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install jq (for JSON parsing)
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Ping Render App URL
+        id: ping
+        run: |
+          echo "Pinging app..."
+          STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 https://n8n-ffmpeg-1-ysgq.onrender.com/)
+          echo "status=$STATUS_CODE" >> $GITHUB_OUTPUT
+
+      - name: Check if Deploy is Already Running
+        id: deploy_status
+        run: |
+          DEPLOY=$(curl -s -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
+            "https://api.render.com/v1/services/${{ secrets.RENDER_SERVICE_ID }}/deploys?limit=1")
+          STATUS=$(echo "$DEPLOY" | jq -r '.[0].status')
+          echo "latest_deploy_status=$STATUS" >> $GITHUB_OUTPUT
+
+      - name: Trigger Redeploy if Down and No Deploy Running
+        if: steps.ping.outputs.status != '200' && steps.deploy_status.outputs.latest_deploy_status != 'build_in_progress'
+        run: |
+          echo "App seems down and no deploy is running. Triggering redeploy..."
+          curl -X POST \
+            -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            "https://api.render.com/v1/services/${{ secrets.RENDER_SERVICE_ID }}/deploys"
